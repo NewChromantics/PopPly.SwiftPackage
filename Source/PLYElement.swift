@@ -1,5 +1,18 @@
 import Foundation
 
+
+public class PLYTypeError: LocalizedError 
+{
+	var message : String 
+	
+	public init(_ messsage:String)
+	{
+		self.message = messsage
+	}
+	
+	public var errorDescription: String	{	message	}
+}		
+		
 public struct PLYElement {
     public enum Property {
         case int8(Int8)
@@ -33,4 +46,43 @@ public struct PLYElement {
     }
 
     public var properties: [Property]
+}
+
+
+public extension PLYElement 
+{
+	public func float32Value(forPropertyIndex propertyIndex: Int) throws -> Float {
+		guard case .float32(let typedValue) = properties[propertyIndex] else 
+		{
+			throw PLYTypeError("Unexpected type for property at index \(propertyIndex)") 
+		}
+		return typedValue
+	}
+	
+	func float32Value(forPropertyIndex propertyIndex: Int,normalise8:UInt8?=nil) throws -> Float 
+	{
+		//	allow uint8->float normalisation
+		if let normalise8
+		{
+			if case .uint8(let value8) = properties[propertyIndex]
+			{
+				let float = Float(value8) / Float(normalise8)
+				return float
+			}
+		}
+		
+		guard case .float32(let typedValue) = properties[propertyIndex] else 
+		{
+			throw PLYTypeError("Unexpected type for property at index \(propertyIndex)") 
+		}
+		return typedValue
+	}
+	
+	func uint8Value(forPropertyIndex propertyIndex: Int) throws -> UInt8 {
+		guard case .uint8(let typedValue) = properties[propertyIndex] else 
+		{
+			throw PLYTypeError("Unexpected type for property at index \(propertyIndex)") 
+		}
+		return typedValue
+	}
 }

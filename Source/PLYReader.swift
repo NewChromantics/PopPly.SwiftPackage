@@ -1,10 +1,10 @@
 import Foundation
 
-public protocol PLYReaderDelegate {
-    func didStartReading(withHeader header: PLYHeader)
-    func didRead(element: PLYElement, typeIndex: Int, withHeader elementHeader: PLYHeader.Element)
-    func didFinishReading()
-    func didFailReading(withError error: Swift.Error?)
+public protocol PLYReaderDelegate 
+{
+	//	throw to abort decode
+	func didStartReading(withHeader header: PLYHeader) throws
+	func didRead(element: PLYElement, typeIndex: Int, withHeader elementHeader: PLYHeader.Element) throws
 }
 
 public class PLYReader {
@@ -24,7 +24,8 @@ public class PLYReader {
         case bodyInvalidStringForPropertyType(PLYHeader.Element, Int, PLYHeader.Property)
         case bodyMissingPropertyValuesInElement(PLYHeader.Element, Int, PLYHeader.Property)
         case bodyUnexpectedValuesInElement(PLYHeader.Element, Int)
-        case unexpectedEndOfFile(URL)
+		case unexpectedEndOfData
+		case unexpectedEndOfFile(URL)
         case internalConsistency
 
         public var errorDescription: String? {
@@ -59,8 +60,10 @@ public class PLYReader {
                 "Missing values for property \(headerProperty.name) in element \(headerElement.name), index \(elementIndex)"
             case .bodyUnexpectedValuesInElement(let headerElement, let elementIndex):
                 "Unexpected values in element \(headerElement.name), index \(elementIndex)"
-            case .unexpectedEndOfFile(let url):
-                "Unexpected end-of-file while reading \(url)"
+				case .unexpectedEndOfFile(let url):
+					"Unexpected end-of-file while reading \(url)"
+				case .unexpectedEndOfData:
+					"Unexpected end-of-data"
             case .internalConsistency:
                 "Internal error in PLYReader"
             }
@@ -88,16 +91,18 @@ public class PLYReader {
         case endHeader = "end_header"
     }
 
-    let url: URL
-
-    public init(_ url: URL) {
-        self.url = url
+	static public func read(url: URL,to delegate: PLYReaderDelegate) throws
+	{
+		try PLYReaderStream().read(url:url, to: delegate)
     }
-
-    public func read(to delegate: PLYReaderDelegate) {
-        PLYReaderStream().read(url, to: delegate)
-    }
+	
+	static public func read(data:Data,to delegate: PLYReaderDelegate) throws 
+	{
+		try PLYReaderStream().read(data:data, to: delegate)
+	}
 }
+
+
 
 fileprivate class PLYReaderStream {
     private enum Phase {
@@ -113,18 +118,25 @@ fileprivate class PLYReaderStream {
     private var currentElementCountInGroup: Int = 0
     private var reusableElement = PLYElement(properties: [])
 
-    public func read(_ url: URL, to delegate: PLYReaderDelegate) {
-        header = nil
-        body = Data()
-        bodyOffset = 0
-        currentElementGroup = 0
-        currentElementCountInGroup = 0
-
-        guard let inputStream = InputStream(url: url) else {
-            delegate.didFailReading(withError: PLYReader.Error.cannotOpenSource(url))
-            return
-        }
-
+	public func read(url: URL, to delegate: PLYReaderDelegate) throws
+	{
+		guard let inputStream = InputStream(url: url) else {
+			throw PLYReader.Error.cannotOpenSource(url)
+			return
+		}
+		
+		try read(inputStream: inputStream,to: delegate)
+	}
+	
+	public func read(data: Data, to delegate: PLYReaderDelegate) throws
+	{
+		let inputStream = InputStream(data: data)
+		
+		try read(inputStream: inputStream,to: delegate)
+	}
+	
+	public func read(inputStream:InputStream, to delegate: PLYReaderDelegate) throws 
+	{
         let bufferSize = 8*1024
         let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
         defer { buffer.deallocate() }
@@ -140,28 +152,22 @@ fileprivate class PLYReaderStream {
             let bytesRead: Int
             switch readResult {
             case -1:
-                delegate.didFailReading(withError: PLYReader.Error.readError(url))
-                return
+                throw PLYReader.Error.unexpectedEndOfData
             case 0:
                 switch phase {
                 case .unstarted, .header:
                     break
                 case .body:
                     // Reprocess the remaining data, now with isEOF = true, since that might mean a successful completion (e.g. ASCII data missing a final EOL)
-                    do {
-                        try processBody(delegate: delegate, isEOF: true)
-                    } catch {
-                        delegate.didFailReading(withError: error)
-                        return
-                    }
+					try processBody(delegate: delegate, isEOF: true)
+                    
                     if isComplete {
-                        delegate.didFinishReading()
                         return
                     }
                 }
-                delegate.didFailReading(withError: PLYReader.Error.unexpectedEndOfFile(url))
-                return
-            default:
+                throw PLYReader.Error.unexpectedEndOfData
+
+			default:
                 bytesRead = readResult
             }
 
@@ -177,23 +183,20 @@ fileprivate class PLYReaderStream {
                             phase = .header
                         } else {
                             // Beginning of stream didn't match headerStartToken; fail
-                            delegate.didFailReading(withError: PLYReader.Error.headerStartMissing)
+                           throw PLYReader.Error.headerStartMissing
                             return
                         }
                     }
                 case .header:
                     headerData.append(buffer[bufferIndex])
                     bufferIndex += 1
-                    if headerData.hasSuffix(PLYReader.Constants.headerEndToken) {
-                        do {
-                            let header = try parseHeader(headerData)
-                            self.header = header
-                            phase = .body
-                            delegate.didStartReading(withHeader: header)
-                        } catch {
-                            delegate.didFailReading(withError: error)
-                            return
-                        }
+                    if headerData.hasSuffix(PLYReader.Constants.headerEndToken) 
+					{
+						let header = try parseHeader(headerData)
+						self.header = header
+						phase = .body
+						try delegate.didStartReading(withHeader: header)
+					
                     }
                 case .body:
                     if bufferIndex == 0 {
@@ -202,14 +205,11 @@ fileprivate class PLYReaderStream {
                         body.append(Data(bytes: buffer, count: bytesRead)[bufferIndex..<bytesRead])
                     }
                     bufferIndex = bytesRead
-                    do {
-                        try processBody(delegate: delegate, isEOF: false)
-                    } catch {
-                        delegate.didFailReading(withError: error)
-                        return
-                    }
-                    if isComplete {
-                        delegate.didFinishReading()
+
+					try processBody(delegate: delegate, isEOF: false)
+                    
+					if isComplete 
+						{
                         return
                     }
                     reclaimBodyIfNeeded()
@@ -370,7 +370,7 @@ fileprivate class PLYReaderStream {
                                                                    result: &reusableElement)
                     guard success else { continue }
 
-                    delegate.didRead(element: reusableElement, typeIndex: self.currentElementGroup, withHeader: elementHeader)
+                    try delegate.didRead(element: reusableElement, typeIndex: self.currentElementGroup, withHeader: elementHeader)
                     currentElementCountInGroup += 1
                     while !isComplete && currentElementCountInGroup == header.elements[currentElementGroup].count {
                         currentElementGroup += 1
@@ -396,7 +396,7 @@ fileprivate class PLYReaderStream {
                     bodyOffset += bytesConsumed
                     bodyUnsafeRawPointerOffset += bytesConsumed
 
-                    delegate.didRead(element: reusableElement, typeIndex: currentElementGroup, withHeader: elementHeader)
+                    try delegate.didRead(element: reusableElement, typeIndex: currentElementGroup, withHeader: elementHeader)
                     currentElementCountInGroup += 1
                     while !isComplete && currentElementCountInGroup == header.elements[currentElementGroup].count {
                         currentElementGroup += 1

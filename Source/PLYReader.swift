@@ -163,13 +163,8 @@ public class PLYReader {
 
 
 
-fileprivate class PLYReaderStream {
-    private enum Phase {
-        case unstarted
-        case header
-        case body
-    }
-
+fileprivate class PLYReaderStream 
+{
     private var header: PLYHeader? = nil
     private var body = Data()
     private var bodyOffset: Int = 0
@@ -218,82 +213,49 @@ fileprivate class PLYReaderStream {
 		self.header = header
 		try delegate.didStartReading(withHeader: header)
 		
-		//var phase: Phase = .unstarted
-		var phase: Phase = .body
-		
 		//	copy initialBodyData into buffer and process that first
 		body.append(initialBodyData)
 		
-
-        while true {
-            let readResult = inputStream.read(buffer, maxLength: bufferSize)
-            let bytesRead: Int
-            switch readResult {
-            case -1:
-                throw PLYReader.Error.unexpectedEndOfData
-            case 0:
-                switch phase {
-                case .unstarted, .header:
-                    break
-                case .body:
-                    // Reprocess the remaining data, now with isEOF = true, since that might mean a successful completion (e.g. ASCII data missing a final EOL)
+		//	read chunks
+		while true 
+		{
+			let readResult = inputStream.read(buffer, maxLength: bufferSize)
+			let bytesRead: Int
+			switch readResult {
+				case -1:
+					throw PLYReader.Error.unexpectedEndOfData
+				case 0:
+					//	Reprocess the remaining data, now with isEOF = true, since that might mean a successful completion (e.g. ASCII data missing a final EOL)
 					try processBody(delegate: delegate, isEOF: true)
-                    
-                    if isComplete {
-                        return
-                    }
-                }
-                throw PLYReader.Error.unexpectedEndOfData
-
-			default:
-                bytesRead = readResult
-            }
-
-            var bufferIndex = 0
-            while bufferIndex < bytesRead {
-                switch phase {
-                case .unstarted:
-                    headerData.append(buffer[bufferIndex])
-                    bufferIndex += 1
-                    if headerData.count == PLYReader.Constants.headerStartToken.count {
-                        if headerData == PLYReader.Constants.headerStartToken {
-                            // Found header start token. Continue to read actual header
-                            phase = .header
-                        } else {
-                            // Beginning of stream didn't match headerStartToken; fail
-                           throw PLYReader.Error.headerStartMissing
-                            return
-                        }
-                    }
-                case .header:
-                    headerData.append(buffer[bufferIndex])
-                    bufferIndex += 1
-                    if headerData.hasSuffix(PLYReader.Constants.headerEndToken) 
-					{
-						let header = try parseHeader(headerData)
-						self.header = header
-						phase = .body
-						try delegate.didStartReading(withHeader: header)
 					
-                    }
-                case .body:
-                    if bufferIndex == 0 {
-                        body.append(buffer, count: bytesRead)
-                    } else if bufferIndex < bytesRead {
-                        body.append(Data(bytes: buffer, count: bytesRead)[bufferIndex..<bytesRead])
-                    }
-                    bufferIndex = bytesRead
-
-					try processBody(delegate: delegate, isEOF: false)
-                    
-					if isComplete 
-						{
-                        return
-                    }
-                    reclaimBodyIfNeeded()
-                }
-            }
-        }
+					if isComplete {
+						return
+					}
+					throw PLYReader.Error.unexpectedEndOfData
+					
+				default:
+					bytesRead = readResult
+			}
+			
+			var bufferIndex = 0
+			while bufferIndex < bytesRead 
+			{
+				if bufferIndex == 0 {
+					body.append(buffer, count: bytesRead)
+				} else if bufferIndex < bytesRead {
+					body.append(Data(bytes: buffer, count: bytesRead)[bufferIndex..<bytesRead])
+				}
+				bufferIndex = bytesRead
+				
+				try processBody(delegate: delegate, isEOF: false)
+				
+				if isComplete 
+				{
+					return
+				}
+				reclaimBodyIfNeeded()
+			}
+		}
     }
 
     private var isComplete: Bool {
@@ -399,91 +361,121 @@ fileprivate class PLYReaderStream {
         return header
     }
 
-    private func processBody(delegate: PLYReaderDelegate,
-                             isEOF: Bool) throws {
-        guard let header else {
-            throw PLYReader.Error.internalConsistency
-        }
+	private func processBody(delegate: PLYReaderDelegate,isEOF: Bool) throws 
+	{
+		guard let header else 
+		{
+			throw PLYReader.Error.internalConsistency
+		}
+		
+		switch header.format 
+		{
+			case .ascii:
+				try processAsciiBody(header:header, delegate: delegate, isEOF: isEOF)
+				
+			case .binaryBigEndian, .binaryLittleEndian:
+				try processBinaryBody(header:header, delegate: delegate, isEOF: isEOF)
+		}
+	}
+	
+	private func processAsciiBody(header:PLYHeader,delegate: PLYReaderDelegate,isEOF: Bool) throws 
+	{
+		try body[bodyOffset...].withUnsafeMutableBytes 
+		{
+			(bodyUnsafeRawBufferPointer: UnsafeMutableRawBufferPointer) in
+			let bodyUnsafeBytePointer = bodyUnsafeRawBufferPointer.bindMemory(to: UInt8.self).baseAddress!
+			var bodyUnsafeBytePointerOffset = 0
+			let bodyUnsafeBytePointerCount = bodyUnsafeRawBufferPointer.count
+			while !isComplete
+			{
+				let elementHeader = header.elements[self.currentElementGroup]
+				
+				let lineStart = bodyUnsafeBytePointerOffset
+				var firstNewlineIndex = lineStart
+				var newlineFound = false
+				while !newlineFound && firstNewlineIndex < bodyUnsafeBytePointerCount
+				{
+					let byte = (bodyUnsafeBytePointer + firstNewlineIndex).pointee
+					newlineFound = byte == PLYReader.Constants.cr || byte == PLYReader.Constants.lf
+					if !newlineFound 
+					{
+						firstNewlineIndex += 1
+					}
+				}
+				
+				let lineLength = firstNewlineIndex - lineStart
+				if firstNewlineIndex < bodyUnsafeBytePointerCount {
+					bodyUnsafeBytePointerOffset = firstNewlineIndex + 1
+				} else if isEOF {
+					bodyUnsafeBytePointerOffset = bodyUnsafeBytePointerCount
+				} else {
+					return
+				}
+				
+				bodyOffset += (bodyUnsafeBytePointerOffset - lineStart)
+				
+				if lineLength == 0 {
+					continue
+				}
+				
+				let success = try Self.processASCIIBodyElement(bodyUnsafeBytePointer,
+															   offset: lineStart,
+															   size: lineLength,
+															   withHeader: elementHeader,
+															   elementIndex: currentElementGroup,
+															   result: &reusableElement)
+				guard success else { continue }
+				
+				try delegate.didRead(element: reusableElement, typeIndex: self.currentElementGroup, withHeader: elementHeader)
+				currentElementCountInGroup += 1
+				while !isComplete && currentElementCountInGroup == header.elements[currentElementGroup].count {
+					currentElementGroup += 1
+					currentElementCountInGroup = 0
+				}
+			}
+		}
+	}
+	
 
-        switch header.format {
-        case .ascii:
-            try body[bodyOffset...].withUnsafeMutableBytes { (bodyUnsafeRawBufferPointer: UnsafeMutableRawBufferPointer) in
-                let bodyUnsafeBytePointer = bodyUnsafeRawBufferPointer.bindMemory(to: UInt8.self).baseAddress!
-                var bodyUnsafeBytePointerOffset = 0
-                let bodyUnsafeBytePointerCount = bodyUnsafeRawBufferPointer.count
-                while !isComplete {
-                    let elementHeader = header.elements[self.currentElementGroup]
-
-                    let lineStart = bodyUnsafeBytePointerOffset
-                    var firstNewlineIndex = lineStart
-                    var newlineFound = false
-                    while !newlineFound && firstNewlineIndex < bodyUnsafeBytePointerCount {
-                        let byte = (bodyUnsafeBytePointer + firstNewlineIndex).pointee
-                        newlineFound = byte == PLYReader.Constants.cr || byte == PLYReader.Constants.lf
-                        if !newlineFound {
-                            firstNewlineIndex += 1
-                        }
-                    }
-
-                    let lineLength = firstNewlineIndex - lineStart
-                    if firstNewlineIndex < bodyUnsafeBytePointerCount {
-                        bodyUnsafeBytePointerOffset = firstNewlineIndex + 1
-                    } else if isEOF {
-                        bodyUnsafeBytePointerOffset = bodyUnsafeBytePointerCount
-                    } else {
-                        return
-                    }
-
-                    bodyOffset += (bodyUnsafeBytePointerOffset - lineStart)
-
-                    if lineLength == 0 {
-                        continue
-                    }
-
-                    let success = try Self.processASCIIBodyElement(bodyUnsafeBytePointer,
-                                                                   offset: lineStart,
-                                                                   size: lineLength,
-                                                                   withHeader: elementHeader,
-                                                                   elementIndex: currentElementGroup,
-                                                                   result: &reusableElement)
-                    guard success else { continue }
-
-                    try delegate.didRead(element: reusableElement, typeIndex: self.currentElementGroup, withHeader: elementHeader)
-                    currentElementCountInGroup += 1
-                    while !isComplete && currentElementCountInGroup == header.elements[currentElementGroup].count {
-                        currentElementGroup += 1
-                        currentElementCountInGroup = 0
-                    }
-                }
-            }
-        case .binaryBigEndian, .binaryLittleEndian:
-            try body[bodyOffset...].withUnsafeBytes { (bodyUnsafeRawBufferPointer: UnsafeRawBufferPointer) in
-                let bodyUnsafeRawPointer = bodyUnsafeRawBufferPointer.baseAddress!
-                var bodyUnsafeRawPointerOffset = 0
-                while !isComplete {
-                    let elementHeader = header.elements[self.currentElementGroup]
-
-                    let (success, bytesConsumed) = try Self.processBinaryBodyElement(bodyUnsafeRawPointer,
-                                                                                     offset: bodyUnsafeRawPointerOffset,
-                                                                                     size: bodyUnsafeRawBufferPointer.count - bodyUnsafeRawPointerOffset,
-                                                                                     bigEndian: header.format == .binaryBigEndian,
-                                                                                     withHeader: elementHeader,
-                                                                                     result: &reusableElement)
-                    guard success else { return }
-                    assert(bytesConsumed != 0, "processBinaryBodyElement consumed at least one byte in producing the PLYElement")
-                    bodyOffset += bytesConsumed
-                    bodyUnsafeRawPointerOffset += bytesConsumed
-
-                    try delegate.didRead(element: reusableElement, typeIndex: currentElementGroup, withHeader: elementHeader)
-                    currentElementCountInGroup += 1
-                    while !isComplete && currentElementCountInGroup == header.elements[currentElementGroup].count {
-                        currentElementGroup += 1
-                        currentElementCountInGroup = 0
-                    }
-                }
-            }
-        }
-    }
+		
+	private func processBinaryBody(header:PLYHeader,delegate: PLYReaderDelegate,isEOF: Bool) throws 
+	{
+		try body[bodyOffset...].withUnsafeBytes 
+		{ 
+			(bodyUnsafeRawBufferPointer: UnsafeRawBufferPointer) in
+			let bodyUnsafeRawPointer = bodyUnsafeRawBufferPointer.baseAddress!
+			var bodyUnsafeRawPointerOffset = 0
+			while !isComplete 
+			{
+				let elementHeader = header.elements[self.currentElementGroup]
+				
+				let (success, bytesConsumed) = try Self.processBinaryBodyElement(bodyUnsafeRawPointer,
+																				 offset: bodyUnsafeRawPointerOffset,
+																				 size: bodyUnsafeRawBufferPointer.count - bodyUnsafeRawPointerOffset,
+																				 bigEndian: header.format == .binaryBigEndian,
+																				 withHeader: elementHeader,
+																				 result: &reusableElement)
+				guard success else { return }
+				assert(bytesConsumed != 0, "processBinaryBodyElement consumed at least one byte in producing the PLYElement")
+				bodyOffset += bytesConsumed
+				bodyUnsafeRawPointerOffset += bytesConsumed
+				
+				try delegate.didRead(element: reusableElement, typeIndex: currentElementGroup, withHeader: elementHeader)
+				currentElementCountInGroup += 1
+				
+				//	completed group
+				if currentElementCountInGroup == header.elements[currentElementGroup].count
+				{
+					while !isComplete
+					{
+						currentElementGroup += 1
+						currentElementCountInGroup = 0
+					}
+				}
+				
+			}
+		}
+	}
 
     private static func tryParsePrimitivePropertyValue(_ propertyString: String, withType propertyType: PLYHeader.PrimitivePropertyType) -> PLYElement.Property? {
         switch propertyType {

@@ -1,5 +1,64 @@
 import Foundation
 
+
+extension InputStream
+{
+	//	returns the chunk up to marker and then any additional data we read but didnt use 
+	public func ReadUntilMarker(marker:Data,includeMarker:Bool) throws -> (Data,Data)
+	{
+		if marker.isEmpty
+		{
+			throw PlyError("ReadUntilMarker with no marker supplied")
+		}
+		
+		var poppedData = Data()
+		
+		//	buffer needs to be at least as big as the marker
+		let readBufferSize = min( marker.count * 10, 8*1024 )!
+		var readBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: readBufferSize)
+		defer { readBuffer.deallocate() }
+		
+		while ( true )
+		{
+			let readResult = self.read(readBuffer, maxLength: readBufferSize)
+			let bytesRead: Int
+			switch readResult 
+			{
+				case -1:
+					throw PLYReader.Error.unexpectedEndOfData
+				case 0:
+					throw PLYReader.Error.headerEndMissing
+					
+				default:
+					bytesRead = readResult
+			}
+			
+			//	look for marker as we add the bytes
+			poppedData.reserveCapacity(poppedData.count+bytesRead)
+			for i in 0..<bytesRead
+			{
+				poppedData.append(readBuffer[i])
+				if poppedData.hasSuffix( marker )
+				{
+					//	found data!
+					//	remove marker if required
+					if !includeMarker
+					{
+						poppedData.removeLast(marker.count)
+					}
+					
+					//	save the other data
+					let unreadCount = (bytesRead-1) - i
+					let unreadData = Data(bytes: &readBuffer[i+1], count: unreadCount)
+					return (poppedData,unreadData)
+				}
+			}
+		}
+	}
+}
+
+
+
 public protocol PLYReaderDelegate 
 {
 	//	throw to abort decode
@@ -135,6 +194,15 @@ fileprivate class PLYReaderStream {
 		try read(inputStream: inputStream,to: delegate)
 	}
 	
+	//	returns header + additional buffer we read out
+	public func readHeader(inputStream:InputStream) throws -> (PLYHeader,Data) 
+	{
+		let (headerData,bodyData) = try inputStream.ReadUntilMarker(marker: PLYReader.Constants.headerEndToken, includeMarker: true )
+		//	parse header
+		let header = try parseHeader(headerData)
+		return (header,bodyData)
+	}
+	
 	public func read(inputStream:InputStream, to delegate: PLYReaderDelegate) throws 
 	{
         let bufferSize = 8*1024
@@ -145,7 +213,17 @@ fileprivate class PLYReaderStream {
         inputStream.open()
         defer { inputStream.close() }
 
-        var phase: Phase = .unstarted
+		let (header,initialBodyData) = try readHeader(inputStream: inputStream)
+		
+		self.header = header
+		try delegate.didStartReading(withHeader: header)
+		
+		//var phase: Phase = .unstarted
+		var phase: Phase = .body
+		
+		//	copy initialBodyData into buffer and process that first
+		body.append(initialBodyData)
+		
 
         while true {
             let readResult = inputStream.read(buffer, maxLength: bufferSize)

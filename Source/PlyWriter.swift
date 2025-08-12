@@ -1,5 +1,5 @@
 import Foundation
-
+import simd
 
 
 public struct PlyError : LocalizedError
@@ -29,9 +29,22 @@ public struct PlyPoint
 	public var r : Float = 0
 	public var g : Float = 0
 	public var b : Float = 0
+	static public var sizeBytes : Int		{	MemoryLayout<PlyPoint>.stride	}
+	static public var sizeMegaBytes : Float	{	Float(sizeBytes) / 1024.0 / 1024.0	}
+	public var xyz : simd_float3	{	simd_float3(x,y,z)	}
 	
 	public init()
 	{
+	}
+
+	public init(xyz:simd_float4,rgb:simd_float3)
+	{
+		x = xyz.x
+		y = xyz.y
+		z = xyz.z
+		r = rgb.x
+		g = rgb.y
+		b = rgb.z
 	}
 }
 

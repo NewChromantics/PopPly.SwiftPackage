@@ -51,7 +51,8 @@ public struct PLYElement {
 
 public extension PLYElement 
 {
-	public func float32Value(forPropertyIndex propertyIndex: Int) throws -> Float {
+	func float32Value(forPropertyIndex propertyIndex: Int) throws -> Float 
+	{
 		guard case .float32(let typedValue) = properties[propertyIndex] else 
 		{
 			throw PLYTypeError("Unexpected type for property at index \(propertyIndex)") 

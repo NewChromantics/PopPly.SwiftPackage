@@ -15,7 +15,7 @@ extension InputStream
 		
 		//	buffer needs to be at least as big as the marker
 		let readBufferSize = min( marker.count * 10, 8*1024 )!
-		var readBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: readBufferSize)
+		let readBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: readBufferSize)
 		defer { readBuffer.deallocate() }
 		
 		while ( true )
@@ -176,7 +176,6 @@ fileprivate class PLYReaderStream
 	{
 		guard let inputStream = InputStream(url: url) else {
 			throw PLYReader.Error.cannotOpenSource(url)
-			return
 		}
 		
 		try read(inputStream: inputStream,to: delegate)
@@ -203,8 +202,7 @@ fileprivate class PLYReaderStream
         let bufferSize = 8*1024
         let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
         defer { buffer.deallocate() }
-        var headerData = Data()
-
+        
         inputStream.open()
         defer { inputStream.close() }
 
